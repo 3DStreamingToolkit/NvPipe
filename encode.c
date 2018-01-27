@@ -66,6 +66,10 @@ struct nvp_encoder {
     bool initialized;
     uint32_t width;
     uint32_t height;
+    uint32_t frameRate;
+	uint32_t idrPeriod;
+	uint32_t intraRefreshPeriod;
+	bool intraRefreshEnableFlag;
     CUdeviceptr rgb; /* GPU copy of input buffer.  Might actually be RGBA. */
     struct {
         size_t pitch;
@@ -147,13 +151,19 @@ flush_encoder(struct nvp_encoder* nvp, size_t timestamp) {
     enc.version = NV_ENC_PIC_PARAMS_VER;
     enc.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
     enc.inputTimeStamp = timestamp;
-    const NVENCSTATUS flsh = nvp->f.nvEncEncodePicture(nvp->encoder, &enc);
-    if(flsh != NV_ENC_SUCCESS) {
-        ERR(enc, "Error %d flushing frame (nvEncEncodePicture): %s", flsh,
-            nvcodec_strerror(flsh));
-        return false;
-    }
-    return true;
+	if (nvp && nvp->encoder)
+	{
+		const NVENCSTATUS flsh = nvp->f.nvEncEncodePicture(nvp->encoder, &enc);
+		if (flsh != NV_ENC_SUCCESS) {
+			ERR(enc, "Error %d flushing frame (nvEncEncodePicture): %s", flsh,
+				nvcodec_strerror(flsh));
+			return false;
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 /* unregister a previously-registered resource.  NvCodec requires one 'register'
@@ -210,7 +220,7 @@ nvp_nvenc_destroy(nvpipe* const __restrict cdc) {
         }
         nvp->nv12.buf = 0;
     }
-    if(nvp->nv12.bstream) {
+    if(nvp->nv12.bstream && nvp->encoder) {
         if(nvp->f.nvEncDestroyBitstreamBuffer(nvp->encoder, nvp->nv12.bstream) !=
                 NV_ENC_SUCCESS) {
             WARN(enc, "error destroying bitstream (output) buffer");
@@ -285,9 +295,10 @@ nvp_rate_control(const struct nvp_encoder* __restrict nvp) {
     /* Prefer quality.  s/QUALITY/FRAMESIZE_CAP/ to optimize for size. */
     rc.rateControlMode = NV_ENC_PARAMS_RC_2_PASS_QUALITY;
     /* Protect against overflow. */
+
     const unsigned RATE_4K_30FPS = 140928614u;
-    rc.maxBitRate = MAX(nvp->bitrate*2u, RATE_4K_30FPS);
-    rc.averageBitRate = MIN(nvp->bitrate, RATE_4K_30FPS);
+    rc.maxBitRate = MAX(nvp->bitrate*2u, RATE_4K_30FPS * 2u);
+    rc.averageBitRate = nvp->bitrate;
 #if NVENCAPI_MAJOR_VERSION >= 7
     /* We have lookahead disabled so this setting does not matter, but just to be
      * clear: we do not use B-frames. */
@@ -304,14 +315,13 @@ static NV_ENC_CONFIG
 nvp_config(const struct nvp_encoder* __restrict nvp) {
     NV_ENC_CONFIG cfg = {0};
     cfg.version = NV_ENC_CONFIG_VER;
-    cfg.profileGUID = NV_ENC_H264_PROFILE_CONSTRAINED_HIGH_GUID;
-    cfg.gopLength = 15;
+    cfg.profileGUID = NV_ENC_H264_PROFILE_BASELINE_GUID;
+    cfg.gopLength = nvp->frameRate / 2;
     cfg.frameIntervalP = 1; /* use only I and P frames. */
     cfg.frameFieldMode = NV_ENC_PARAMS_FRAME_FIELD_MODE_FRAME;
     cfg.mvPrecision = NV_ENC_MV_PRECISION_QUARTER_PEL;
 
     cfg.rcParams = nvp_rate_control(nvp);
-    cfg.encodeCodecConfig.h264Config.idrPeriod = (uint32_t)4294967925ULL;
     cfg.encodeCodecConfig.h264Config.adaptiveTransformMode =
             NV_ENC_H264_ADAPTIVE_TRANSFORM_DISABLE;
     cfg.encodeCodecConfig.h264Config.sliceMode = 3;
@@ -322,9 +332,9 @@ nvp_config(const struct nvp_encoder* __restrict nvp) {
     /* Setup an encoder that puts an IDR every 60 frames, an I-frame every 15
      * frames, and the rest P-frames. */
     cfg.encodeCodecConfig.h264Config.chromaFormatIDC = yuv420;
-    cfg.encodeCodecConfig.h264Config.maxNumRefFrames = 4;
+    cfg.encodeCodecConfig.h264Config.maxNumRefFrames = 0;
     cfg.encodeCodecConfig.h264Config.hierarchicalPFrames = 1;
-    cfg.encodeCodecConfig.h264Config.enableIntraRefresh = 1;
+    cfg.encodeCodecConfig.h264Config.enableIntraRefresh = nvp->intraRefreshEnableFlag;
     cfg.encodeCodecConfig.h264Config.numTemporalLayers = 1;
     cfg.encodeCodecConfig.h264Config.enableConstrainedEncoding = 1;
 #if NVENCAPI_MAJOR_VERSION >= 7
@@ -332,16 +342,17 @@ nvp_config(const struct nvp_encoder* __restrict nvp) {
 #endif
     cfg.encodeCodecConfig.h264Config.level = NV_ENC_LEVEL_AUTOSELECT;
     cfg.encodeCodecConfig.h264Config.enableVFR = 1;
-    cfg.encodeCodecConfig.h264Config.idrPeriod = 60;
-    cfg.encodeCodecConfig.h264Config.intraRefreshPeriod = 15;
+    cfg.encodeCodecConfig.h264Config.idrPeriod = nvp->idrPeriod;
+    cfg.encodeCodecConfig.h264Config.intraRefreshPeriod = nvp->intraRefreshPeriod;
     cfg.encodeCodecConfig.h264Config.intraRefreshCnt = 5;
     cfg.encodeCodecConfig.h264Config.ltrTrustMode = 1;
     cfg.encodeCodecConfig.h264Config.ltrNumFrames = 1;
+
     return cfg;
 }
 
 static bool
-initialize(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
+initialize(struct nvp_encoder* nvp, uint32_t width, uint32_t height, uint32_t frameRate) {
     assert(nvp->initialized == false);
     NV_ENC_CONFIG cfg = nvp_config(nvp);
 
@@ -359,7 +370,7 @@ initialize(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
     init.encodeHeight = init.darHeight = height;
     init.maxEncodeWidth = nvp->max_width; /* We may resize up to this later. */
     init.maxEncodeHeight = nvp->max_height;
-    init.frameRateNum = 30;
+    init.frameRateNum = frameRate;
     init.frameRateDen = 1;
     /* Async (that is, setting this to 1) is only supported on windows.
      * Regardless, we don't want async because our contract with clients is to be
@@ -383,7 +394,7 @@ create_bitstream(struct nvp_encoder* nvp, uint32_t width, uint32_t height,
     bb.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
     bb.size = width*height*4;
     bb.memoryHeap = NV_ENC_MEMORY_HEAP_AUTOSELECT;
-    bb.memoryHeap = NV_ENC_MEMORY_HEAP_SYSMEM_CACHED; /* sample */
+    bb.memoryHeap = NV_ENC_MEMORY_HEAP_VID; /* sample */
     const NVENCSTATUS nvbs = nvp->f.nvEncCreateBitstreamBuffer(nvp->encoder, &bb);
     if(NV_ENC_SUCCESS != nvbs) {
         ERR(enc, "error %d creating output bitstream buffer: %s", (int)nvbs,
@@ -427,8 +438,8 @@ nvp_allocate_buffers(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
  * width/height (which by our API we only get when they call encode),
  * else this would just be inline in the create function. */
 static bool
-enc_initialize(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
-    if(initialize(nvp, width, height) == false) {
+enc_initialize(struct nvp_encoder* nvp, uint32_t width, uint32_t height, uint32_t frameRate) {
+    if(initialize(nvp, width, height, frameRate) == false) {
         return false;
     }
 
@@ -445,12 +456,13 @@ enc_initialize(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
 
     nvp->width = width;
     nvp->height = height;
+    nvp->frameRate = frameRate;
     nvp->initialized = true;
     return true;
 }
 
 static bool
-nvp_resize(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
+nvp_resize(struct nvp_encoder* nvp, uint32_t width, uint32_t height, uint32_t frameRate) {
     assert(nvp->initialized && "Must have previously initialized encoder.");
     /* Don't do anything if we're resizing to the same width/height. */
     if(nvp->width == width && nvp->height == height) {
@@ -472,7 +484,7 @@ nvp_resize(struct nvp_encoder* nvp, uint32_t width, uint32_t height) {
     init.encodeHeight = init.darHeight = height;
     init.maxEncodeWidth = nvp->max_width; /* We may resize up to this later. */
     init.maxEncodeHeight = nvp->max_height;
-    init.frameRateNum = 30;
+    init.frameRateNum = nvp->frameRate;
     init.frameRateDen = 1;
     /* Async (that is, setting this to 1) is only supported on windows.
      * Regardless, we don't want async because our contract with clients is to be
@@ -603,7 +615,7 @@ nvp_nvenc_encode(nvpipe * const __restrict codec,
                  const size_t ibuf_sz,
                  void *const __restrict obuf,
                  size_t* const __restrict obuf_sz,
-                 const uint32_t width, const uint32_t height,
+                 const uint32_t width, const uint32_t height, const uint32_t frameRate,
                  nvp_fmt_t format) {
     struct nvp_encoder* nvp = (struct nvp_encoder*)codec;
     assert(nvp);
@@ -626,13 +638,13 @@ nvp_nvenc_encode(nvpipe * const __restrict codec,
 
     nvp_err_t errcode = NVPIPE_SUCCESS;
     if(!nvp->initialized) {
-        if(!enc_initialize(nvp, widthDevice, heightDevice)) {
+        if(!enc_initialize(nvp, widthDevice, heightDevice, frameRate)) {
             ERR(enc, "initialization failed");
             return NVPIPE_EINVAL;
         }
     }
-    if(widthDevice != nvp->width || heightDevice != nvp->height) {
-        nvp_resize(nvp, widthDevice, heightDevice);
+    if(frameRate != nvp->frameRate || widthDevice != nvp->width || heightDevice != nvp->height) {
+        nvp_resize(nvp, widthDevice, heightDevice, frameRate);
     }
 
     const cudaError_t rerr = reorganize(nvp, ibuf, widthDevice, heightDevice,
@@ -678,7 +690,7 @@ nvp_nvenc_encode(nvpipe * const __restrict codec,
     NV_ENC_LOCK_BITSTREAM bitlock = {0};
     bitlock.version = NV_ENC_LOCK_BITSTREAM_VER;
     bitlock.outputBitstream = nvp->nv12.bstream;
-    bitlock.doNotWait = false;
+    bitlock.doNotWait = true;
     bitlock.frameIdx = 0;
     nvtxRangePush("nvenc LockBitstream");
     const NVENCSTATUS block = nvp->f.nvEncLockBitstream(nvp->encoder, &bitlock);
@@ -749,7 +761,7 @@ nvp_nvenc_decode(nvpipe* const __restrict codec,
 }
 
 static nvp_err_t
-nvp_nvenc_bitrate(nvpipe* codec, uint64_t bitrate) {
+nvp_nvenc_bitrate(nvpipe* codec, uint64_t bitrate, uint64_t framerate) {
     struct nvp_encoder* nvp = (struct nvp_encoder*)codec;
     assert(nvp->impl.type == ENCODER);
 
@@ -772,7 +784,7 @@ nvp_nvenc_bitrate(nvpipe* codec, uint64_t bitrate) {
     init.encodeHeight = init.darHeight = nvp->height;
     init.maxEncodeWidth = nvp->max_width; /* We may resize up to this later. */
     init.maxEncodeHeight = nvp->max_height;
-    init.frameRateNum = 30;
+    init.frameRateNum = nvp->frameRate;
     init.frameRateDen = 1;
     /* Async (that is, setting this to 1) is only supported on windows.
      * Regardless, we don't want async because our contract with clients is to be
@@ -835,7 +847,7 @@ query_max_dimensions(struct nvp_encoder* nvp) {
 }
 
 nvp_impl_t*
-nvp_create_encoder(uint64_t bitrate) {
+nvp_create_encoder(uint64_t bitrate, uint64_t frameRate, uint64_t idrPeriod, uint64_t intraRefreshPeriod, bool intraRefreshEnableFlag) {
     struct nvp_encoder* nvp = calloc(1, sizeof(struct nvp_encoder));
     nvp->impl.type = ENCODER;
     nvp->impl.encode = nvp_nvenc_encode;
@@ -843,6 +855,9 @@ nvp_create_encoder(uint64_t bitrate) {
     nvp->impl.decode = nvp_nvenc_decode;
     nvp->impl.destroy = nvp_nvenc_destroy;
     nvp->bitrate = bitrate;
+	nvp->idrPeriod = idrPeriod;
+	nvp->intraRefreshPeriod = intraRefreshPeriod;
+	nvp->intraRefreshEnableFlag = intraRefreshEnableFlag;
 
     CLEAR_DL_ERRORS();
     nvp->lib = dlopen(NVENC_LIB, RTLD_LAZY|RTLD_LOCAL);

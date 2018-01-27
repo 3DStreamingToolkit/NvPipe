@@ -29,6 +29,7 @@
 
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -83,6 +84,7 @@ typedef void nvpipe;
  * return a valid instance on success, NULL otherwise.
  * @param[in] backend implementation to use.
  * @param[in] bitrate rate to use
+ * @param[in] frame rate to use
  *
  * If you're unsure what to use for a bitrate, we suggest the Kush gauge:
  *  [image width] x [image height] x [framerate] x [motion rank] x 0.07
@@ -93,7 +95,7 @@ typedef void nvpipe;
  *      http://www.adobe.com/content/dam/Adobe/en/devnet/
  */
 NVPIPE_VISIBLE nvpipe*
-nvpipe_create_encoder(nvp_codec_t id, uint64_t bitrate);
+nvpipe_create_encoder(nvp_codec_t id, uint64_t bitrate, uint64_t frameRate, uint64_t idrPeriod, uint64_t intraRefreshPeriod, bool intraRefreshEnableFlag);
 
 /** @fn create nvpipe decoding instance
  *
@@ -137,7 +139,7 @@ nvpipe_encode(nvpipe * const __restrict codec,
               const size_t ibuf_sz,
               void *const __restrict obuf,
               size_t* const __restrict obuf_sz,
-              const uint32_t width, const uint32_t height,
+              const uint32_t width, const uint32_t height, const uint32_t frameRate,
               nvp_fmt_t format);
 
 /** Adjust the bitrate used for an encoder.  The setting takes effect for
@@ -150,7 +152,7 @@ nvpipe_encode(nvpipe * const __restrict codec,
  * Note this only makes sense for encoders; decoders accept streams encoded at
  * any bitrate. */
 NVPIPE_VISIBLE
-nvp_err_t nvpipe_bitrate(nvpipe* const enc, uint64_t bitrate);
+nvp_err_t nvpipe_bitrate(nvpipe* const enc, uint64_t bitrate, uint64_t frameRate);
 
 /** decode/decompress a frame
  *

@@ -40,10 +40,10 @@ typedef nvp_err_t (fqn_encode)(
         const size_t ibuf_sz,
         void *const __restrict obuf,
         size_t* const __restrict obuf_sz,
-        const uint32_t width, const uint32_t height,
+        const uint32_t width, const uint32_t height, const uint32_t frameRate,
         nvp_fmt_t format
         );
-typedef nvp_err_t (fqn_bitrate)(nvpipe* codec, uint64_t);
+typedef nvp_err_t (fqn_bitrate)(nvpipe* codec, uint64_t, uint64_t);
 typedef nvp_err_t (fqn_decode)(
         nvpipe* const __restrict codec,
         const void* const __restrict ibuf, const size_t ibuf_sz,
@@ -69,7 +69,7 @@ typedef struct nvp_impl_ {
     fqn_destroy* destroy;
 } nvp_impl_t;
 
-nvp_impl_t* nvp_create_encoder(uint64_t bitrate);
+nvp_impl_t* nvp_create_encoder(uint64_t bitrate, uint64_t frameRate, uint64_t idrPeriod, uint64_t intraRefreshPeriod, bool intraRefreshEnableFlag);
 nvp_impl_t* nvp_create_decoder();
 nvp_impl_t* nvp_create_ffmpeg(bool nvidia, uint64_t bitrate);
 

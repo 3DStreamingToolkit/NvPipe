@@ -33,10 +33,10 @@
 DECLARE_CHANNEL(api);
 
 NVPIPE_VISIBLE nvpipe*
-nvpipe_create_encoder(nvp_codec_t id, uint64_t bitrate) {
+nvpipe_create_encoder(nvp_codec_t id, uint64_t bitrate, uint64_t frameRate, uint64_t idrPeriod, uint64_t intraRefreshPeriod, bool intraRefreshEnableFlag) {
     switch(id) {
     case NVPIPE_H264_NV:
-        return nvp_create_encoder(bitrate);
+        return nvp_create_encoder(bitrate, frameRate, idrPeriod, intraRefreshPeriod, intraRefreshEnableFlag);
         break;
 #if NVPIPE_FFMPEG == 1
     case NVPIPE_H264_NVFFMPEG:
@@ -56,52 +56,16 @@ nvpipe_create_encoder(nvp_codec_t id, uint64_t bitrate) {
     return NULL;
 }
 
-NVPIPE_VISIBLE nvpipe*
-nvpipe_create_decoder(nvp_codec_t id) {
-    switch(id) {
-    case NVPIPE_H264_NV:
-        return nvp_create_decoder();
-        break;
-#if NVPIPE_FFMPEG == 1
-    case NVPIPE_H264_NVFFMPEG:
-        return nvp_create_ffmpeg(true, 0);
-        break;
-    case NVPIPE_H264_FFMPEG:
-        return nvp_create_ffmpeg(false, 0);
-        break;
-#else
-    case NVPIPE_H264_NVFFMPEG: /* fallthrough */
-    case NVPIPE_H264_FFMPEG:
-        ERR(api, "nvpipe: FFMpeg support not compiled in.");
-        return NULL;
-#endif
-    }
-    return NULL;
-}
-
 nvp_err_t
 nvpipe_encode(nvpipe* const __restrict cdc,
               const void* const __restrict ibuf,
               const size_t ibuf_sz,
               void* const __restrict obuf,
               size_t* const __restrict obuf_sz,
-              const uint32_t width, const uint32_t height, nvp_fmt_t format) {
+              const uint32_t width, const uint32_t height, const uint32_t frameRate, nvp_fmt_t format) {
     assert(cdc);
     nvp_impl_t* enc = (nvp_impl_t*)cdc;
-    return enc->encode(enc, ibuf, ibuf_sz, obuf, obuf_sz, width, height, format);
-}
-
-nvp_err_t
-nvpipe_decode(nvpipe* const __restrict codec,
-              const void* const __restrict ibuf,
-              const size_t ibuf_sz,
-              void* const __restrict obuf,
-              const uint32_t width,
-              const uint32_t height,
-              nvp_fmt_t format) {
-    assert(codec);
-    nvp_impl_t* dec = (nvp_impl_t*)codec;
-    return dec->decode(dec, ibuf, ibuf_sz, obuf, width, height, format);
+    return enc->encode(enc, ibuf, ibuf_sz, obuf, obuf_sz, width, height, frameRate, format);
 }
 
 void
@@ -114,11 +78,11 @@ nvpipe_destroy(nvpipe* const __restrict codec) {
 }
 
 nvp_err_t
-nvpipe_bitrate(nvpipe* const __restrict codec, uint64_t br) {
+nvpipe_bitrate(nvpipe* const __restrict codec, uint64_t br, uint64_t frameRate) {
     assert(codec);
     if(codec == NULL) {
         return NVPIPE_EINVAL;
     }
     nvp_impl_t* nvp = (nvp_impl_t*)codec;
-    return nvp->bitrate(codec, br);
+    return nvp->bitrate(codec, br, frameRate);
 }
