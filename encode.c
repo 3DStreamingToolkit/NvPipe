@@ -297,8 +297,9 @@ nvp_rate_control(const struct nvp_encoder* __restrict nvp) {
     /* Protect against overflow. */
 
     const unsigned RATE_4K_30FPS = 140928614u;
-    rc.maxBitRate = MAX(nvp->bitrate*2u, RATE_4K_30FPS * 2u);
-    rc.averageBitRate = nvp->bitrate;
+	rc.maxBitRate = MAX(nvp->bitrate * 2u, RATE_4K_30FPS);
+	rc.averageBitRate = MIN(nvp->bitrate, RATE_4K_30FPS);
+
 #if NVENCAPI_MAJOR_VERSION >= 7
     /* We have lookahead disabled so this setting does not matter, but just to be
      * clear: we do not use B-frames. */
@@ -315,13 +316,17 @@ static NV_ENC_CONFIG
 nvp_config(const struct nvp_encoder* __restrict nvp) {
     NV_ENC_CONFIG cfg = {0};
     cfg.version = NV_ENC_CONFIG_VER;
-    cfg.profileGUID = NV_ENC_H264_PROFILE_BASELINE_GUID;
-    cfg.gopLength = nvp->frameRate / 2;
+	cfg.profileGUID = NV_ENC_H264_PROFILE_CONSTRAINED_HIGH_GUID;
+	cfg.gopLength = 15;
+
+    //cfg.profileGUID = NV_ENC_H264_PROFILE_BASELINE_GUID;
+    //cfg.gopLength = nvp->frameRate / 2;
     cfg.frameIntervalP = 1; /* use only I and P frames. */
     cfg.frameFieldMode = NV_ENC_PARAMS_FRAME_FIELD_MODE_FRAME;
     cfg.mvPrecision = NV_ENC_MV_PRECISION_QUARTER_PEL;
 
     cfg.rcParams = nvp_rate_control(nvp);
+	cfg.encodeCodecConfig.h264Config.idrPeriod = (uint32_t)4294967925ULL;
     cfg.encodeCodecConfig.h264Config.adaptiveTransformMode =
             NV_ENC_H264_ADAPTIVE_TRANSFORM_DISABLE;
     cfg.encodeCodecConfig.h264Config.sliceMode = 3;
@@ -332,7 +337,7 @@ nvp_config(const struct nvp_encoder* __restrict nvp) {
     /* Setup an encoder that puts an IDR every 60 frames, an I-frame every 15
      * frames, and the rest P-frames. */
     cfg.encodeCodecConfig.h264Config.chromaFormatIDC = yuv420;
-    cfg.encodeCodecConfig.h264Config.maxNumRefFrames = 0;
+    cfg.encodeCodecConfig.h264Config.maxNumRefFrames = 4;
     cfg.encodeCodecConfig.h264Config.hierarchicalPFrames = 1;
     cfg.encodeCodecConfig.h264Config.enableIntraRefresh = nvp->intraRefreshEnableFlag;
     cfg.encodeCodecConfig.h264Config.numTemporalLayers = 1;
@@ -394,7 +399,7 @@ create_bitstream(struct nvp_encoder* nvp, uint32_t width, uint32_t height,
     bb.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
     bb.size = width*height*4;
     bb.memoryHeap = NV_ENC_MEMORY_HEAP_AUTOSELECT;
-    bb.memoryHeap = NV_ENC_MEMORY_HEAP_VID; /* sample */
+    bb.memoryHeap = NV_ENC_MEMORY_HEAP_SYSMEM_CACHED; /* sample */
     const NVENCSTATUS nvbs = nvp->f.nvEncCreateBitstreamBuffer(nvp->encoder, &bb);
     if(NV_ENC_SUCCESS != nvbs) {
         ERR(enc, "error %d creating output bitstream buffer: %s", (int)nvbs,
